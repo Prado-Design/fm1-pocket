@@ -1,0 +1,334 @@
+<title>FM-1 Pocket</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one 1003×463 faceplate (the user's SVG) scaled to fit the screen; landscape, rotates itself on a portrait phone. */
+:root{
+  --ground:#0d0d0d; --plate:#171717; --ink:#d9d9d9; --dim:#6c737a;
+  --led:#00ffff; --rec:#ff2b2b; --press:rgba(0,0,0,.42); --lit:rgba(0,255,255,.16);
+  --ui:"Poppins",ui-sans-serif,system-ui,sans-serif;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--ground);color:var(--ink);font-family:var(--ui);overflow:hidden;
+  touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+  padding-left:max(0px,env(safe-area-inset-left,0px));padding-right:max(0px,env(safe-area-inset-right,0px))}
+#fit{position:fixed;top:env(safe-area-inset-top,0px);bottom:env(safe-area-inset-bottom,0px);left:env(safe-area-inset-left,0px);right:env(safe-area-inset-right,0px);overflow:hidden}
+#stage{position:absolute;left:50%;top:50%;width:1003px;height:463px;transform-origin:0 0;background:var(--plate);border-radius:6px}
+#art{position:absolute;inset:0;width:1003px;height:463px;max-width:none;pointer-events:none}
+#lcd{position:absolute;left:380px;top:0;width:240px;height:240px;image-rendering:pixelated;background:#000}
+.hit{position:absolute;border:0;padding:0;margin:0;background:transparent;cursor:pointer;-webkit-tap-highlight-color:transparent;outline:none}
+.hit:focus-visible{box-shadow:0 0 0 2px var(--dim)}
+.hit::after{content:"";position:absolute;inset:0;border-radius:inherit;background:transparent;transition:background .06s}
+.hit.lit::after{background:var(--lit)}
+.hit.rec.lit::after{background:rgba(255,43,43,.28)}
+.hit.down::after{background:var(--press)}
+.pad .dot{position:absolute;left:50%;top:19px;width:9px;height:10px;margin-left:-4.5px;border-radius:5px;background:transparent}
+.pad.lit .dot{background:var(--led);box-shadow:0 0 8px 2px rgba(0,255,255,.55)}
+.pad.lit::after,.white.lit::after{background:transparent}
+.white .bar{position:absolute;left:50%;top:19px;width:8.7px;height:56.3px;margin-left:-4.35px;border-radius:4.3px;background:transparent}
+.white.lit .bar{background:var(--led);box-shadow:0 0 10px 2px rgba(0,255,255,.45)}
+.knob{border-radius:50%}
+.knob .cap{position:absolute;inset:7px;border-radius:50%}
+.knob .tick{position:absolute;left:50%;top:9px;width:4px;height:17px;margin-left:-2px;border-radius:2px;background:var(--ink);transform-origin:50% calc(100% + 13px)}
+.knob.master .cap{background:#191919}
+.knob.down::after{background:rgba(255,255,255,.05)}
+#tools{position:absolute;left:300px;top:178px;display:flex;flex-direction:column;gap:8px}
+#tools button{width:30px;height:30px;border-radius:15px;border:0;background:#202020;color:var(--dim);display:grid;place-items:center;cursor:pointer}
+#tools button:focus-visible{outline:2px solid var(--dim)}
+#tools button[aria-pressed="true"]{color:var(--led)}
+#tools svg{width:16px;height:16px}
+#hint{position:absolute;left:380px;top:206px;width:240px;text-align:center;font:500 11px/1 var(--ui);color:var(--dim);letter-spacing:.06em;pointer-events:none;transition:opacity .4s}
+#hint.gone{opacity:0}
+#fail{position:absolute;left:390px;top:80px;width:220px;font:12px/1.4 var(--ui);color:var(--ink);text-align:center}
+@media (prefers-reduced-motion:reduce){.hit::after,#hint{transition:none}}
+</style>
+
+<div id="fit"><div id="stage">
+  <img id="art" alt="FM-1 faceplate" src="__SVG__">
+  <canvas id="lcd" width="240" height="240" aria-label="FM-1 screen"></canvas>
+  <div id="hint">TAP ANY CONTROL TO START SOUND</div>
+  <div id="tools">
+    <button id="t-sound" aria-label="Sound on or off" aria-pressed="false" title="Sound"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 6h3l4-3v10L5 10H2z"/><path d="M11 5.5c1 .8 1 4.2 0 5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg></button>
+    <button id="t-full" aria-label="Full screen" title="Full screen"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
+  </div>
+</div></div>
+
+<script>
+/* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception
+ * The FM1Core runtime and audio worklet below are taken unchanged in behaviour from
+ * M-VAVE FM1 Open V14 sdk/Simulator.js (Copyright (c) 2026 M-VAVE); the engine is the
+ * FM1 Open firmware compiled to WebAssembly. Faceplate artwork and panel code: prototype. */
+const FM1_WASM_B64="__WASM__";
+function coreRuntime(){
+  const sameBytes=(a,b)=>{if(!a||a.length!==b.length)return false;for(let i=0;i<b.length;i++)if(a[i]!==b[i])return false;return true;};
+  return class FM1Core{
+    constructor(wasm,flash,snapshot){
+      this.c=new WebAssembly.Instance(new WebAssembly.Module(wasm),{}).exports;
+      const c=this.c;c._initialize();
+      if(snapshot){
+        c.memory.grow((snapshot.byteLength-c.memory.buffer.byteLength)/65536);
+        new Uint8Array(c.memory.buffer).set(new Uint8Array(snapshot));
+      }else{
+        const saved=flash?.length===536576;
+        if(saved)new Uint8Array(c.memory.buffer,c.sim_flash(),536576).set(flash);
+        c.sim_boot(saved?0:1);
+      }
+      this.lastFrame=this.lastFlash=-1;
+    }
+    command(m){
+      const c=this.c;
+      switch(m.type){
+        case'control':c.sim_control(m.kind,m.index,m.value);break;
+        case'release':c.sim_release();break;
+        case'panic':c.sim_panic();break;
+        case'tick':for(let i=0;i<Math.min(32,m.blocks>>>0);i++)c.sim_render();break;
+      }
+    }
+    frame(force=false){
+      const c=this.c,msg={type:'frame',state:new Uint8Array(c.memory.buffer,c.sim_state(),225).slice()};
+      const rev=c.sim_frame_revision();
+      if(force||rev!==this.lastFrame){
+        const changed=c.sim_frame_changes(),bands=force||this.lastFrame<0?32767:changed;
+        const src=new Uint16Array(c.memory.buffer,c.sim_pixels(),57600);
+        if(bands===32767)msg.pixels=src.slice();
+        else{
+          let n=0;for(let b=bands;b;b&=b-1)n++;
+          msg.pixels=new Uint16Array(n*3840);
+          for(let band=0,at=0;band<15;){
+            if(!(bands&(1<<band))){band++;continue;}
+            const first=band;while(band<15&&(bands&(1<<band)))band++;
+            const run=src.subarray(first*3840,band*3840);msg.pixels.set(run,at);at+=run.length;
+          }
+        }
+        msg.pixelBands=bands;this.lastFrame=rev;
+      }
+      const fr=c.sim_flash_revision();
+      if(fr!==this.lastFlash){msg.flash=new Uint8Array(c.memory.buffer,c.sim_flash(),536576).slice();this.lastFlash=fr;}
+      return msg;
+    }
+  };
+}
+function audioThread(createCore){
+  const Core=createCore();
+  class FM1Processor extends AudioWorkletProcessor{
+    constructor(options){
+      super();const cfg=options.processorOptions;
+      this.core=new Core(cfg.wasm,null,cfg.snapshot);this.c=this.core.c;
+      this.blockFrames=this.c.sim_block_frames();this.position=this.blockFrames;this.fraction=0;this.ratio=44100/sampleRate;this.count=0;
+      this.a=new Float32Array(2);this.b=new Float32Array(2);this.resetAudio();
+      this.port.onmessage=e=>{try{this.core.command(e.data);if(e.data.type==='panic')this.resetAudio();this.publish();}catch(_){}};
+      this.publish(true);this.port.postMessage({type:'ready'});
+    }
+    render(){this.audioAt=this.c.sim_render();this.position=0;
+      if(!this.buffer||this.buffer.buffer!==this.c.memory.buffer)this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);}
+    next(t){if(this.position===this.blockFrames)this.render();const at=this.position++*2;t[0]=this.buffer[at];t[1]=this.buffer[at+1];}
+    resetAudio(){this.position=this.blockFrames;this.fraction=0;this.next(this.a);this.next(this.b);}
+    publish(force=false){const m=this.core.frame(force);this.port.postMessage(m,Object.values(m).filter(v=>ArrayBuffer.isView(v)).map(v=>v.buffer));}
+    process(inputs,outputs){
+      const out=outputs[0];if(!out?.[0])return true;
+      const left=out[0],right=out[1],length=left.length;
+      if(this.buffer.buffer!==this.c.memory.buffer)this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);
+      if(this.ratio===1&&length>=2){
+        left[0]=this.a[0];left[1]=this.b[0];if(right){right[0]=this.a[1];right[1]=this.b[1];}
+        for(let i=2;i<length;){
+          if(this.position===this.blockFrames)this.render();
+          const count=Math.min(this.blockFrames-this.position,length-i),start=this.position*2;
+          if(right)for(let j=0;j<count;j++){left[i+j]=this.buffer[start+j*2];right[i+j]=this.buffer[start+j*2+1];}
+          else for(let j=0;j<count;j++)left[i+j]=this.buffer[start+j*2];
+          this.position+=count;i+=count;
+        }
+        this.next(this.a);this.next(this.b);
+      }else for(let i=0;i<length;i++){
+        left[i]=this.a[0]+(this.b[0]-this.a[0])*this.fraction;
+        if(right)right[i]=this.a[1]+(this.b[1]-this.a[1])*this.fraction;
+        this.fraction+=this.ratio;
+        while(this.fraction>=1){this.fraction--;const s=this.a;this.a=this.b;this.b=s;this.next(this.b);}
+      }
+      this.count+=length;if(this.count>=sampleRate/30){this.count%=sampleRate/30;this.publish();}return true;
+    }
+  }
+  registerProcessor('fm1-engine',FM1Processor);
+}
+
+(()=>{
+'use strict';
+const $=id=>document.getElementById(id);
+const stage=$('stage'),lcd=$('lcd'),ctx2d=lcd.getContext('2d'),img=ctx2d.createImageData(240,240);
+const rgb5=Array.from({length:32},(_,v)=>Math.round(v*255/31)),rgb6=Array.from({length:64},(_,v)=>Math.round(v*255/63));
+for(let i=3;i<img.data.length;i+=4)img.data[i]=255;
+const STORE='fm1.pocket.flash.v1';
+let core=null,node=null,ctx=null,gain=null,wasm=null,audioOn=false,starting=false,waiting=[],rotated=false,scale=1,volume=70;
+
+/* ---- fit the 1003×463 plate to the viewport; rotate on a portrait screen ---- */
+const fitBox=$('fit');
+function fit(){
+  const W=fitBox.clientWidth||innerWidth,H=fitBox.clientHeight||innerHeight;rotated=H>W*1.1;
+  const w=rotated?H:W,h=rotated?W:H;scale=Math.min(w/1003,h/463);
+  stage.style.transform=rotated
+    ?`rotate(90deg) scale(${scale}) translate(-501.5px,-231.5px)`
+    :`scale(${scale}) translate(-501.5px,-231.5px)`;
+}
+addEventListener('resize',fit);addEventListener('orientationchange',()=>setTimeout(fit,250));fit();
+if(!document.documentElement.requestFullscreen||matchMedia('(display-mode: standalone)').matches||navigator.standalone)$('t-full').hidden=true;
+
+/* ---- engine messages ---- */
+function send(m){
+  if(starting){waiting.push(m);return;}
+  if(node)node.port.postMessage(m);else if(core)core.command(m);
+}
+function control(kind,index,value){send({type:'control',kind,index,value});}
+const ledEls=new Map();
+let lastState=null;
+function receive(m){
+  if(m.type!=='frame')return;
+  const s=m.state;
+  for(const [i,el] of ledEls)if(!lastState||lastState[168+i]!==s[168+i])el.classList.toggle('lit',!!s[168+i]);
+  lastState=s;
+  if(m.pixels){
+    for(let band=0,src=0;band<15;){
+      if(!(m.pixelBands&(1<<band))){band++;continue;}
+      const first=band;while(band<15&&(m.pixelBands&(1<<band)))band++;
+      for(let i=first*3840;i<band*3840;i++){const v=m.pixels[src++],at=i*4;img.data[at]=rgb5[v>>11];img.data[at+1]=rgb6[(v>>5)&63];img.data[at+2]=rgb5[v&31];}
+      ctx2d.putImageData(img,0,0,0,first*16,240,(band-first)*16);
+    }
+  }
+  if(m.flash)saveFlash(m.flash);
+}
+let saveTimer=0,pendingFlash=null;
+function saveFlash(bytes){
+  pendingFlash=bytes;clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{try{let s='';for(let i=0;i<pendingFlash.length;i+=32768)s+=String.fromCharCode.apply(null,pendingFlash.subarray(i,i+32768));localStorage.setItem(STORE,btoa(s));}catch(_){}},800);
+}
+function loadFlash(){try{const s=localStorage.getItem(STORE);if(!s)return null;const b=atob(s),a=new Uint8Array(b.length);for(let i=0;i<b.length;i++)a[i]=b.charCodeAt(i);return a;}catch(_){return null;}}
+
+/* ---- audio: start from the first touch, move the running engine into the worklet ---- */
+async function startAudio(){
+  if(node||starting||!core)return;
+  starting=true;let candidate;
+  try{
+    // iPhone: play through the ring/silent switch like a music app.
+    try{if(navigator.audioSession)navigator.audioSession.type='playback';}catch(_){}
+    ctx=new AudioContext({sampleRate:44100,latencyHint:'interactive'});
+    ctx.resume();
+    const src='('+audioThread.toString()+')('+coreRuntime.toString()+');';
+    const url=URL.createObjectURL(new Blob([src],{type:'text/javascript'}));
+    await ctx.audioWorklet.addModule(url);
+    candidate=new AudioWorkletNode(ctx,'fm1-engine',{numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[2],
+      processorOptions:{wasm,snapshot:core.c.memory.buffer.slice(0)}});
+    gain=ctx.createGain();gain.gain.value=0;
+    candidate.connect(gain).connect(ctx.destination);
+    await new Promise((res,rej)=>{
+      const t=setTimeout(()=>rej(Error('timeout')),4000);
+      candidate.onprocessorerror=()=>{clearTimeout(t);rej(Error('worklet'));};
+      candidate.port.onmessage=e=>{if(e.data.type==='ready'){clearTimeout(t);res();}else receive(e.data);};
+    });
+    node=candidate;core=null;audioOn=true;setGain();
+    $('hint').classList.add('gone');
+  }catch(err){
+    candidate?.disconnect();if(ctx&&!node){ctx.close().catch(()=>{});ctx=null;}
+    $('hint').textContent='SOUND UNAVAILABLE IN THIS BROWSER';
+  }finally{
+    starting=false;for(const m of waiting.splice(0))send(m);
+    $('t-sound').setAttribute('aria-pressed',String(audioOn));
+  }
+}
+function setGain(){if(gain&&ctx)gain.gain.setTargetAtTime(audioOn?1:0,ctx.currentTime,.01);}
+function wake(){
+  if(!node&&!starting)startAudio();
+  else if(ctx&&ctx.state!=='running'&&audioOn)ctx.resume();
+}
+
+/* ---- pointer → stage coordinates (handles the rotated portrait layout) ---- */
+function toStage(dx,dy){return rotated?[dy/scale,-dx/scale]:[dx/scale,dy/scale];}
+
+/* ---- panel controls, positioned on the SVG's own geometry ---- */
+function hit(cls,x,y,w,h,r,label){
+  const b=document.createElement('button');b.className='hit '+cls;b.setAttribute('aria-label',label);
+  Object.assign(b.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px',borderRadius:r+'px'});
+  stage.insertBefore(b,$('tools'));return b;
+}
+function holdable(el,kind,index){
+  const active=new Set();
+  const press=on=>{el.classList.toggle('down',on);control(kind,index,on?1:0);};
+  el.addEventListener('contextmenu',e=>e.preventDefault());
+  el.addEventListener('pointerdown',e=>{
+    e.preventDefault();wake();
+    if(e.shiftKey&&kind===0){el.dataset.latched=el.dataset.latched?'':'1';press(!!el.dataset.latched);return;}
+    el.setPointerCapture(e.pointerId);if(!active.size)press(true);active.add(e.pointerId);
+  });
+  const up=e=>{if(active.delete(e.pointerId)&&!active.size&&!el.dataset.latched)press(false);};
+  for(const t of['pointerup','pointercancel','lostpointercapture'])el.addEventListener(t,up);
+  el.addEventListener('keydown',e=>{if((e.code==='Enter'||e.code==='Space')&&!e.repeat){e.preventDefault();wake();press(true);}});
+  el.addEventListener('keyup',e=>{if(e.code==='Enter'||e.code==='Space'){e.preventDefault();press(false);}});
+}
+function knob(x,y,r,label,index){
+  const el=hit('knob'+(index<0?' master':''),x-r,y-r,r*2,r*2,r,label);
+  el.innerHTML='<span class="cap"></span><span class="tick"></span>';
+  const tick=el.lastChild;tick.style.top=(r-31)+'px';
+  let angle=0,acc=0,last=null;
+  const draw=()=>{tick.style.transform=`rotate(${index<0?-135+volume*2.7:angle}deg)`;};
+  const turn=d=>{
+    if(index<0){volume=Math.max(0,Math.min(100,volume+d*2));control(3,0,Math.round(volume*1023/100));}
+    else{angle+=d*18;control(2,index,d);}
+    draw();
+  };
+  el.addEventListener('pointerdown',e=>{e.preventDefault();wake();el.setPointerCapture(e.pointerId);last=[e.clientX,e.clientY];acc=0;el.classList.add('down');});
+  el.addEventListener('pointermove',e=>{
+    if(!last||!el.hasPointerCapture(e.pointerId))return;
+    const [sx,sy]=toStage(e.clientX-last[0],e.clientY-last[1]);last=[e.clientX,e.clientY];
+    acc+=(-sy+sx*.35);const steps=Math.trunc(acc/7);
+    if(steps){acc-=steps*7;turn(Math.max(-20,Math.min(20,steps)));}
+  });
+  const end=()=>{last=null;el.classList.remove('down');};
+  for(const t of['pointerup','pointercancel','lostpointercapture'])el.addEventListener(t,end);
+  el.addEventListener('wheel',e=>{if(!e.deltaY)return;e.preventDefault();turn(e.deltaY<0?1:-1);},{passive:false});
+  el.addEventListener('keydown',e=>{const d={ArrowUp:1,ArrowRight:1,ArrowDown:-1,ArrowLeft:-1}[e.code];if(d){e.preventDefault();turn(d);}});
+  draw();
+}
+// Encoders: firmware order SELECT 0, ALGORITHM 1, K1–K4 2–5, PRESETS 6. MASTER is the volume pot.
+[[63.45,'Master volume',-1],[149.19,'Select',0],[234.93,'Presets',6],[321.81,'Algorithm',1]].forEach(([x,l,i])=>knob(x,77.17,38.3,l,i));
+[[672.5,'Knob 1',2],[762.5,'Knob 2',3],[852.5,'Knob 3',4],[942.5,'Knob 4',5]].forEach(([x,l,i])=>knob(x,81.5,33.5,l,i));
+// Buttons: OCT− 0, OCT+ 1, FX…GLO 2–7, HOME…REC 8–13. Every button has an LED (state[168+n]).
+[[95,'Octave down',0],[203,'Octave up',1]].forEach(([x,l,i])=>{const b=hit('btn',x,171,85.74,50.3,4.6,l);holdable(b,0,i);ledEls.set(i,b);});
+['FX','SEL','ENV','LFO','EDIT','GLO'].forEach((l,c)=>{const b=hit('btn',646+c*55,141,44,44,4,l);holdable(b,0,2+c);ledEls.set(2+c,b);});
+['HOME','SAVE','ARP','SEQ','PLAY / STOP','REC'].forEach((l,c)=>{const b=hit('btn'+(c===5?' rec':''),646+c*55,196,44,44,4,l);holdable(b,0,8+c);ledEls.set(8+c,b);});
+// Keys F3–G5 (0–26). Upper pads are the black keys; their LEDs are the white dots.
+const padX=[43.44,105.18,166.91,290.38,353.25,475.58,538.45,601.33,723.36,785.39,907.71];
+const padKey=[1,3,5,8,10,13,15,17,20,22,25];
+const padName=['OP1','OP2','OP3','OP4','OP5','OP6','Pitch','Global','Mono','Poly','F sharp 5'];
+padX.forEach((x,i)=>{const b=hit('pad',x,261.8,50.3,83.45,25.15,padName[i]);b.innerHTML='<span class="dot"></span>';holdable(b,1,padKey[i]);ledEls.set(14+padKey[i],b);});
+const whites=[0,2,4,6,7,9,11,12,14,16,18,19,21,23,24,26];
+whites.forEach((k,i)=>{const b=hit('white',13.72+i*61.733,352.1,50.3,94.9,25.15,'Step '+(i+1));b.innerHTML='<span class="bar"></span>';holdable(b,1,k);ledEls.set(14+k,b);});
+
+/* ---- small tools: sound toggle, full screen ---- */
+$('t-sound').addEventListener('click',()=>{
+  if(!node){startAudio();return;}
+  audioOn=!audioOn;if(audioOn&&ctx.state!=='running')ctx.resume();setGain();
+  $('t-sound').setAttribute('aria-pressed',String(audioOn));
+});
+$('t-full').addEventListener('click',async()=>{
+  try{
+    if(document.fullscreenElement)await document.exitFullscreen();
+    else{await document.documentElement.requestFullscreen();try{await screen.orientation.lock('landscape');}catch(_){}}
+  }catch(_){}
+});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ctx&&audioOn&&ctx.state!=='running')ctx.resume();});
+addEventListener('blur',()=>{send({type:'release'});for(const el of stage.querySelectorAll('.down'))el.classList.remove('down');});
+
+/* ---- boot the firmware on the page; it ticks here until sound starts ---- */
+try{
+  const bin=atob(FM1_WASM_B64);wasm=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)wasm[i]=bin.charCodeAt(i);
+  const Core=coreRuntime();core=new Core(wasm,loadFlash());
+  control(3,0,Math.round(volume*1023/100));
+  receive(core.frame(true));
+  const bf=core.c.sim_block_frames();let last=performance.now(),frames=0;
+  setInterval(()=>{
+    const now=performance.now();frames+=Math.min(40,now-last)*44.1;last=now;
+    const blocks=Math.floor(frames/bf);frames%=bf;
+    if(core&&!starting){core.command({type:'tick',blocks});receive(core.frame());}
+  },20);
+}catch(err){
+  const f=document.createElement('div');f.id='fail';f.textContent='The FM-1 engine could not start here: '+err.message;stage.append(f);
+}
+})();
+</script>
