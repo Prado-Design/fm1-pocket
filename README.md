@@ -15,3 +15,5 @@ python3 build/build.py
 ```
 
 Edit `build/template.html` (page and controls) or `build/faceplate.svg` (artwork), then rebuild. Every build changes the offline cache name, so installed copies update the next time they open online.
+
+Have Fun :)
