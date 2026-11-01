@@ -400,7 +400,10 @@ $('t-full').addEventListener('click',async()=>{
  * the same blocks, so every copy stays identical: song, screen and playback. Guests run a little behind the host
  * to ride out network jitter, and compare a song checksum every 1024 blocks to catch any drift. */
 const net={role:null,live:false,room:null,act:null,snap:null,host:null,peers:new Set(),held:new Map(),mine:new Set(),
-  hashes:new Map(),volume:70,timer:0,resyncAt:0,tag:'',attempt:0};
+  hashes:new Map(),volume:70,timer:0,resyncAt:0,tag:'',attempt:0,lost:false,wake:null};
+// Keep the screen on during a session: a locked phone drops the connection.
+async function keepAwake(){if(!net.role||document.hidden||net.wake)return;try{net.wake=await navigator.wakeLock.request('screen');net.wake.addEventListener('release',()=>{net.wake=null;});}catch(_){}}
+document.addEventListener('visibilitychange',keepAwake);
 const jam=$('jam');
 function jamShow(title,text,a,b,link){
   $('jam-title').textContent=title;$('jam-text').textContent=text;
@@ -441,7 +444,7 @@ async function netHost(){
   try{await netOpen(id);}catch(_){jamShow('Play together','Playing together needs the online FM-1 Pocket site.',null,['Close',jamHide]);return;}
   if(attempt!==net.attempt){net.room.leave();return;}
   net.role='host';net.live=true;net.volume=volume;net.held.set('me',new Set());
-  node.port.postMessage({type:'mode',mode:'host'});
+  node.port.postMessage({type:'mode',mode:'host'});keepAwake();
   net.room.onPeerJoin=peer=>net.act.send({t:'hi',v:net.tag,host:1},{target:peer}).catch(()=>{});
   net.room.onPeerLeave=peer=>{net.peers.delete(peer);for(const key of net.held.get(peer)||[])hold(peer,key,0);net.held.delete(peer);jamStatus();};
   net.act.onMessage=(d,{peerId})=>{
@@ -472,8 +475,8 @@ async function netEnd(){
     node.port.postMessage({type:'mode',mode:'solo'});
   }else if(node)node.port.postMessage({type:'leave'});
   const guest=net.role==='guest'&&net.live;
-  clearTimeout(net.timer);
-  Object.assign(net,{role:null,live:false,room:null,host:null,peers:new Set(),held:new Map(),mine:new Set(),hashes:new Map()});
+  clearTimeout(net.timer);net.wake?.release().catch(()=>{});
+  Object.assign(net,{role:null,live:false,lost:false,wake:null,room:null,host:null,peers:new Set(),held:new Map(),mine:new Set(),hashes:new Map()});
   history.replaceState(null,'',location.pathname+location.search);
   setGain();control(3,0,Math.round(volume*1023/100));jamStatus();
   if(guest)jamShow('Session ended','The song you were playing is on your FM-1 now, unsaved. Press SAVE to keep it.',['OK',jamHide]);
@@ -489,13 +492,14 @@ async function netJoin(id){
   if(!node){jamShow('Join','Sound has to be working to play together. Tap Join to try again.',['Join',()=>netJoin(id)],['Not now',jamHide]);return;}
   try{await netOpen(id);}catch(_){netFail('Playing together needs the online FM-1 Pocket site.');return;}
   if(attempt!==net.attempt){net.room.leave();return;}
-  net.role='guest';jamStatus();
-  net.timer=setTimeout(()=>{if(!net.live)netFail('Your friend’s session didn’t answer. Check it’s still open, then try the link again.');},30000);
+  net.role='guest';jamStatus();keepAwake();
+  jamShow('Joining','Looking for your friend’s session. Keep FM-1 Pocket open on their phone too.',null,['Cancel',netEnd]);
+  net.timer=setTimeout(()=>{if(!net.live)netFail('Your friend’s session didn’t answer. Check it’s still open on their phone, then try the link again.');},120000);
   net.act.onMessage=(d,{peerId})=>{
-    if(d.t==='hi'&&d.host&&!net.host){
+    if(d.t==='hi'&&d.host&&(!net.host||net.host===peerId)){
       if(d.v!==net.tag){netFail('Your FM-1 Pocket and your friend’s are different versions. Reload both, then try again.');return;}
       net.host=peerId;net.act.send({t:'hi',v:net.tag},{target:peerId}).catch(()=>{});
-      jamShow('Joining','Loading your friend’s synth…',null,['Cancel',netEnd]);return;
+      if(!net.live)jamShow('Joining','Loading your friend’s synth…',null,['Cancel',netEnd]);return;
     }
     if(peerId!==net.host)return;
     if(d.t==='e')node.port.postMessage({type:'net',front:d.b,events:[{s:d.s,b:d.b,m:d.m}]});
@@ -510,8 +514,14 @@ async function netJoin(id){
     net.hashes.clear();
     if(!net.live){net.live=true;net.volume=volume;setGain();clearTimeout(net.timer);
       jamShow('Connected','You’re playing your friend’s FM-1. Your presses reach it after a short delay.',['OK',jamHide],['Leave',netEnd]);}
+    else if(net.lost){net.lost=false;clearTimeout(net.timer);jamHide();}
   };
-  net.room.onPeerLeave=peer=>{if(peer===net.host)netEnd();};
+  net.room.onPeerLeave=peer=>{
+    if(peer!==net.host||!net.live){if(peer===net.host)net.host=null;return;}
+    net.lost=true;clearTimeout(net.timer);
+    jamShow('Reconnecting','Lost the connection to your friend’s phone. Waiting for it to come back…',null,['Leave',netEnd]);
+    net.timer=setTimeout(netEnd,120000);
+  };
 }
 function netFail(text){netEnd().then(()=>jamShow('Couldn’t join',text,['OK',jamHide]));}
 function resync(){const t=performance.now();if(net.host&&t-net.resyncAt>5000){net.resyncAt=t;net.act.send({t:'re'},{target:net.host}).catch(()=>{});}}

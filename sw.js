@@ -1,4 +1,4 @@
-const CACHE = 'fm1-pocket-d0c286bbd60a';
+const CACHE = 'fm1-pocket-8798739c7dd6';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './trystero.js'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
