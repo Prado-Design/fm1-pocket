@@ -45,13 +45,21 @@ body{background:var(--ground);color:var(--ink);font-family:var(--ui);overflow:hi
 .knob .tick{position:absolute;left:50%;top:9px;width:4px;height:17px;margin-left:-2px;border-radius:2px;background:var(--ink);transform-origin:50% calc(100% + 13px)}
 .knob.master .cap{background:#191919}
 .knob.down::after{background:rgba(255,255,255,.05)}
-#tools{position:absolute;left:300px;top:178px;display:flex;flex-direction:column;gap:8px}
+#tools{position:absolute;left:300px;top:140px;display:flex;flex-direction:column;gap:8px}
 #tools button{width:30px;height:30px;border-radius:15px;border:0;background:#202020;color:var(--dim);display:grid;place-items:center;cursor:pointer}
 #tools button:focus-visible{outline:2px solid var(--dim)}
 #tools button[aria-pressed="true"]{color:var(--led)}
 #tools svg{width:16px;height:16px}
 #hint{position:absolute;left:380px;top:206px;width:240px;text-align:center;font:500 11px/1 var(--ui);color:var(--dim);letter-spacing:.06em;pointer-events:none;transition:opacity .4s}
 #hint.gone{opacity:0}
+#jam{position:absolute;left:380px;top:0;width:240px;height:240px;padding:18px 16px 16px;background:rgba(13,13,13,.96);display:flex;flex-direction:column;gap:10px;font-family:var(--ui)}
+#jam h2{margin:0;font:600 12px/1.2 var(--ui);letter-spacing:.08em;text-transform:uppercase;color:var(--ink)}
+#jam p{margin:0;font:400 12px/1.45 var(--ui);color:#a3a9ae}
+#jam-link{font:500 11px/1.35 ui-monospace,Menlo,monospace;color:var(--ink);background:#1b1b1b;border-radius:6px;padding:7px 8px;word-break:break-all;-webkit-user-select:text;user-select:text}
+.jam-row{margin-top:auto;display:flex;gap:8px}
+.jam-row button{flex:1;height:32px;border:0;border-radius:16px;background:#242424;color:var(--dim);font:500 12px/1 var(--ui);cursor:pointer}
+.jam-row button.main{background:var(--ink);color:var(--ground)}
+.jam-row button:focus-visible{outline:2px solid var(--dim);outline-offset:2px}
 #fail{position:absolute;left:390px;top:80px;width:220px;font:12px/1.4 var(--ui);color:var(--ink);text-align:center}
 @media (prefers-reduced-motion:reduce){.hit::after,#hint{transition:none}}
 </style>
@@ -64,7 +72,14 @@ body{background:var(--ground);color:var(--ink);font-family:var(--ui);overflow:hi
   <div id="hint">TAP ANY CONTROL TO START SOUND</div>
   <div id="tools">
     <button id="t-sound" aria-label="Sound on or off" aria-pressed="false" title="Sound"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 6h3l4-3v10L5 10H2z"/><path d="M11 5.5c1 .8 1 4.2 0 5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg></button>
+    <button id="t-jam" aria-label="Play together" aria-pressed="false" title="Play together"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="5.5" cy="5" r="2.3"/><circle cx="11" cy="5.5" r="1.9"/><path d="M1.5 13c0-2.4 1.8-4 4-4s4 1.6 4 4z"/><path d="M10.4 13c0-1.5-.5-2.7-1.3-3.4.5-.3 1.1-.5 1.9-.5 1.9 0 3.5 1.4 3.5 3.9z"/></svg></button>
     <button id="t-full" aria-label="Full screen" title="Full screen"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
+  </div>
+  <div id="jam" role="dialog" aria-labelledby="jam-title" hidden>
+    <h2 id="jam-title"></h2>
+    <p id="jam-text"></p>
+    <div id="jam-link" hidden></div>
+    <div class="jam-row"><button id="jam-b"></button><button id="jam-a" class="main"></button></div>
   </div>
 </div></div>
 
@@ -125,24 +140,74 @@ function coreRuntime(){
 }
 function audioThread(createCore){
   const Core=createCore();
+  // Play together: a guest starts once it has LEAD blocks of host time in hand (about 140 ms).
+  const LEAD=48;
   class FM1Processor extends AudioWorkletProcessor{
     constructor(options){
       super();const cfg=options.processorOptions;
-      this.core=new Core(cfg.wasm,null,cfg.snapshot);this.c=this.core.c;
+      this.wasm=cfg.wasm;this.core=new Core(cfg.wasm,null,cfg.snapshot);this.c=this.core.c;
       this.blockFrames=this.c.sim_block_frames();this.position=this.blockFrames;this.fraction=0;this.ratio=44100/sampleRate;this.count=0;
-      this.a=new Float32Array(2);this.b=new Float32Array(2);this.resetAudio();
-      this.port.onmessage=e=>{try{this.core.command(e.data);if(e.data.type==='panic')this.resetAudio();this.publish();}catch(_){}};
+      this.a=new Float32Array(2);this.b=new Float32Array(2);
+      this.blocks=0;this.mode='solo';this.seq=0;this.queue=[];this.front=0;this.floor=0;this.hold=true;this.mute=false;this.own=null;this.behind=false;
+      this.silence=new Float32Array(this.blockFrames*2);this.resetAudio();
+      this.port.onmessage=e=>{try{this.message(e.data);this.publish();}catch(_){}};
       this.publish(true);this.port.postMessage({type:'ready'});
     }
-    render(){this.audioAt=this.c.sim_render();this.position=0;
-      if(!this.buffer||this.buffer.buffer!==this.c.memory.buffer)this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);}
+    message(m){
+      switch(m.type){
+        case'mode':this.mode=m.mode;this.seq=0;return;
+        case'snap':this.port.postMessage({type:'snap',peer:m.peer,b:this.blocks,s:this.seq,mem:this.c.memory.buffer.slice(0)});return;
+        case'net':
+          for(const e of m.events)if(e.s>this.floor)this.queue.push(e);
+          if(this.queue.length>20000)this.queue.splice(0,this.queue.length-20000);
+          if(m.front>this.front)this.front=m.front;return;
+        case'load':
+          if(!this.own)this.own=this.c.memory.buffer.slice(0);
+          this.swap(m.mem);this.blocks=m.b;this.floor=m.s;this.queue=this.queue.filter(e=>e.s>m.s);
+          this.mode='guest';this.hold=true;this.behind=false;return;
+        case'leave':{
+          // Back to this phone's own synth, bringing the session's song along as unsaved work.
+          if(this.own){
+            const n=this.c.sim_export()?0:4264,song=n?new Uint8Array(this.c.memory.buffer,this.c.sim_file(),n).slice():null;
+            this.swap(this.own);this.own=null;
+            if(song){new Uint8Array(this.c.memory.buffer,this.c.sim_file(),n).set(song);this.c.sim_import(n);}
+          }
+          this.mode='solo';this.queue=[];this.floor=0;this.mute=false;return;}
+      }
+      if(this.mode==='guest')return;
+      this.core.command(m);if(m.type==='panic')this.resetAudio();
+      if(this.mode==='host'&&(m.type==='control'||m.type==='release'))this.port.postMessage({type:'ev',e:{s:++this.seq,b:this.blocks,m}});
+    }
+    swap(mem){this.core=new Core(this.wasm,null,mem);this.c=this.core.c;this.buffer=this.silence;this.position=this.blockFrames;}
+    hash(){
+      if(this.c.sim_export())return 0;
+      const b=new Uint8Array(this.c.memory.buffer,this.c.sim_file(),4264);let h=2166136261;
+      for(let i=0;i<b.length;i++)h=Math.imul(h^b[i],16777619)>>>0;return h;
+    }
+    render(){
+      if(this.mode==='guest'){
+        // Never pass the host: stall (silence) when out of host time, skip ahead when far behind.
+        const room=this.front-this.blocks;
+        if(room>3000&&!this.behind){this.behind=true;this.port.postMessage({type:'behind'});}
+        if(this.hold?room<LEAD:room<=0){this.hold=true;this.mute=true;this.buffer=this.silence;this.position=0;return;}
+        this.hold=false;this.mute=false;
+        for(let n=Math.min(8,room-LEAD*3);n>0;n--)this.step();
+      }
+      this.step();
+    }
+    step(){
+      if(this.mode==='guest')while(this.queue.length&&this.queue[0].b<=this.blocks)this.core.command(this.queue.shift().m);
+      if(this.mode!=='solo'&&!(this.blocks&1023))this.port.postMessage({type:'hash',b:this.blocks,h:this.hash()});
+      this.audioAt=this.c.sim_render();this.blocks++;this.position=0;
+      if(!this.buffer||this.buffer===this.silence||this.buffer.buffer!==this.c.memory.buffer)this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);
+    }
     next(t){if(this.position===this.blockFrames)this.render();const at=this.position++*2;t[0]=this.buffer[at];t[1]=this.buffer[at+1];}
     resetAudio(){this.position=this.blockFrames;this.fraction=0;this.next(this.a);this.next(this.b);}
-    publish(force=false){const m=this.core.frame(force);this.port.postMessage(m,Object.values(m).filter(v=>ArrayBuffer.isView(v)).map(v=>v.buffer));}
+    publish(force=false){const m=this.core.frame(force);m.blocks=this.blocks;this.port.postMessage(m,Object.values(m).filter(v=>ArrayBuffer.isView(v)).map(v=>v.buffer));}
     process(inputs,outputs){
       const out=outputs[0];if(!out?.[0])return true;
       const left=out[0],right=out[1],length=left.length;
-      if(this.buffer.buffer!==this.c.memory.buffer)this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);
+      if(!this.mute&&this.buffer.buffer!==this.c.memory.buffer)this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);
       if(this.ratio===1&&length>=2){
         left[0]=this.a[0];left[1]=this.b[0];if(right){right[0]=this.a[1];right[1]=this.b[1];}
         for(let i=2;i<length;){
@@ -191,11 +256,12 @@ function send(m){
   if(starting){waiting.push(m);return;}
   if(node)node.port.postMessage(m);else if(core)core.command(m);
 }
-function control(kind,index,value){send({type:'control',kind,index,value});}
+function control(kind,index,value){if(net.live)netInput(kind,index,value);else send({type:'control',kind,index,value});}
 const ledEls=new Map();
 let lastState=null;
 function receive(m){
-  if(m.type!=='frame')return;
+  if(m.type!=='frame'){netWorklet(m);return;}
+  if(net.role==='host')netBeat(m.blocks);
   const s=m.state;
   for(const [i,el] of ledEls)if(!lastState||lastState[168+i]!==s[168+i])el.classList.toggle('lit',!!s[168+i]);
   lastState=s;
@@ -211,6 +277,7 @@ function receive(m){
 }
 let saveTimer=0,pendingFlash=null;
 function saveFlash(bytes){
+  if(net.role==='guest')return; // the host's storage is not ours to keep
   pendingFlash=bytes;clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{try{let s='';for(let i=0;i<pendingFlash.length;i+=32768)s+=String.fromCharCode.apply(null,pendingFlash.subarray(i,i+32768));localStorage.setItem(STORE,btoa(s));}catch(_){}},800);
 }
@@ -247,7 +314,7 @@ async function startAudio(){
     $('t-sound').setAttribute('aria-pressed',String(audioOn));
   }
 }
-function setGain(){if(gain&&ctx)gain.gain.setTargetAtTime(audioOn?1:0,ctx.currentTime,.01);}
+function setGain(){if(gain&&ctx)gain.gain.setTargetAtTime(audioOn?(net.live?Math.min(2,volume/Math.max(1,net.volume)):1):0,ctx.currentTime,.01);}
 function wake(){
   if(!node&&!starting)startAudio();
   else if(ctx&&ctx.state!=='running'&&audioOn)ctx.resume();
@@ -327,12 +394,160 @@ $('t-full').addEventListener('click',async()=>{
     else{await document.documentElement.requestFullscreen();try{await screen.orientation.lock('landscape');}catch(_){}}
   }catch(_){}
 });
+/* ---- play together: one shared FM-1 across phones ----
+ * The host's engine is the reference. Every press from every player goes to the host, whose engine stamps it
+ * with the block it lands before. Guests start from a copy of the host's memory and replay the same presses at
+ * the same blocks, so every copy stays identical: song, screen and playback. Guests run a little behind the host
+ * to ride out network jitter, and compare a song checksum every 1024 blocks to catch any drift. */
+const net={role:null,live:false,room:null,act:null,snap:null,host:null,peers:new Set(),held:new Map(),mine:new Set(),
+  hashes:new Map(),volume:70,timer:0,resyncAt:0,tag:'',attempt:0};
+const jam=$('jam');
+function jamShow(title,text,a,b,link){
+  $('jam-title').textContent=title;$('jam-text').textContent=text;
+  const l=$('jam-link');l.hidden=!link;l.textContent=link||'';
+  for(const [id,v] of [['jam-a',a],['jam-b',b]]){const el=$(id);el.hidden=!v;if(v){el.textContent=v[0];el.onclick=v[1];}}
+  jam.hidden=false;
+}
+const jamHide=()=>{jam.hidden=true;};
+function jamStatus(){
+  $('t-jam').setAttribute('aria-pressed',String(!!net.role));
+  if(net.role!=='host'||jam.hidden&&!net.peers.size)return;
+  const n=net.peers.size,link=location.origin+location.pathname+'#jam='+net.id;
+  jamShow('Session open',n?(n===1?'1 friend is playing with you.':n+' friends are playing with you.')
+    :'Send this link to a friend. When they open it, you’ll both be playing this FM-1.',
+    [navigator.share?'Share link':'Copy link',()=>shareLink(link)],['End',netEnd],link);
+}
+async function shareLink(link){
+  try{if(navigator.share){await navigator.share({title:'Play my FM-1',url:link});return;}}catch(_){return;}
+  try{await navigator.clipboard.writeText(link);$('jam-a').textContent='Copied';}catch(_){}
+}
+async function netOpen(id){
+  const {joinRoom}=await import('./trystero.js');
+  net.id=id;net.room=joinRoom({appId:'fm1-pocket-jam-v1'},id,{onJoinError:e=>{if(net.role==='guest'&&!net.live&&(!net.host||e?.peerId===net.host))netFail('Couldn’t connect to your friend’s phone. Some networks block direct connections; try both phones on Wi-Fi.');}});
+  net.act=net.room.makeAction('fm1');net.snap=net.room.makeAction('snap');
+}
+const toPeers=d=>{if(net.peers.size)net.act.send(d,{target:[...net.peers]}).catch(()=>{});};
+const pack=async(buf,out)=>new Uint8Array(await new Response(new Blob([buf]).stream()
+  .pipeThrough(out?new CompressionStream('gzip'):new DecompressionStream('gzip'))).arrayBuffer());
+
+/* host */
+async function netHost(){
+  const attempt=++net.attempt;
+  jamShow('Play together','Starting a session…');
+  await startAudio();
+  if(attempt!==net.attempt)return;
+  if(!node){jamShow('Play together','Sound has to be working to play together.',null,['Close',jamHide]);return;}
+  const id=Array.from(crypto.getRandomValues(new Uint8Array(8)),v=>'abcdefghijkmnpqrstuvwxyz23456789'[v&31]).join('');
+  try{await netOpen(id);}catch(_){jamShow('Play together','Playing together needs the online FM-1 Pocket site.',null,['Close',jamHide]);return;}
+  if(attempt!==net.attempt){net.room.leave();return;}
+  net.role='host';net.live=true;net.volume=volume;net.held.set('me',new Set());
+  node.port.postMessage({type:'mode',mode:'host'});
+  net.room.onPeerJoin=peer=>net.act.send({t:'hi',v:net.tag,host:1},{target:peer}).catch(()=>{});
+  net.room.onPeerLeave=peer=>{net.peers.delete(peer);for(const key of net.held.get(peer)||[])hold(peer,key,0);net.held.delete(peer);jamStatus();};
+  net.act.onMessage=(d,{peerId})=>{
+    if(d.t==='hi'){
+      if(d.v!==net.tag){net.act.send({t:'bad'},{target:peerId}).catch(()=>{});return;}
+      net.peers.add(peerId);net.held.set(peerId,new Set());node.port.postMessage({type:'snap',peer:peerId});jamStatus();
+    }else if(d.t==='in'&&net.peers.has(peerId))apply(peerId,d.k|0,d.i|0,d.v|0);
+    else if(d.t==='re'&&net.peers.has(peerId))node.port.postMessage({type:'snap',peer:peerId});
+  };
+  jamStatus();
+}
+// A button or key counts as held while any player holds it.
+function hold(player,key,on){
+  const was=[...net.held.values()].some(h=>h.has(key));
+  net.held.get(player)?.[on?'add':'delete'](key);
+  const now=[...net.held.values()].some(h=>h.has(key));
+  if(was!==now)node.port.postMessage({type:'control',kind:key>>5,index:key&31,value:now?1:0});
+}
+function apply(player,kind,index,value){
+  if((kind===0&&index<14)||(kind===1&&index<27))hold(player,kind*32+index,value?1:0);
+  else if(kind===2&&index<7&&value&&Math.abs(value)<=127)node.port.postMessage({type:'control',kind,index,value});
+}
+function netBeat(b){if(net.peers.size)toPeers({t:'h',b});}
+async function netEnd(){
+  ++net.attempt;net.room?.leave();
+  if(net.role==='host'){
+    for(const [player,keys] of net.held)if(player!=='me')for(const key of keys)hold(player,key,0);
+    node.port.postMessage({type:'mode',mode:'solo'});
+  }else if(node)node.port.postMessage({type:'leave'});
+  const guest=net.role==='guest'&&net.live;
+  clearTimeout(net.timer);
+  Object.assign(net,{role:null,live:false,room:null,host:null,peers:new Set(),held:new Map(),mine:new Set(),hashes:new Map()});
+  history.replaceState(null,'',location.pathname+location.search);
+  setGain();control(3,0,Math.round(volume*1023/100));jamStatus();
+  if(guest)jamShow('Session ended','The song you were playing is on your FM-1 now, unsaved. Press SAVE to keep it.',['OK',jamHide]);
+  else jamHide();
+}
+
+/* guest */
+async function netJoin(id){
+  const attempt=++net.attempt;
+  jamShow('Joining','Connecting to your friend’s FM-1…',null,['Cancel',netEnd]);
+  await startAudio();
+  if(attempt!==net.attempt)return;
+  if(!node){jamShow('Join','Sound has to be working to play together. Tap Join to try again.',['Join',()=>netJoin(id)],['Not now',jamHide]);return;}
+  try{await netOpen(id);}catch(_){netFail('Playing together needs the online FM-1 Pocket site.');return;}
+  if(attempt!==net.attempt){net.room.leave();return;}
+  net.role='guest';jamStatus();
+  net.timer=setTimeout(()=>{if(!net.live)netFail('Your friend’s session didn’t answer. Check it’s still open, then try the link again.');},30000);
+  net.act.onMessage=(d,{peerId})=>{
+    if(d.t==='hi'&&d.host&&!net.host){
+      if(d.v!==net.tag){netFail('Your FM-1 Pocket and your friend’s are different versions. Reload both, then try again.');return;}
+      net.host=peerId;net.act.send({t:'hi',v:net.tag},{target:peerId}).catch(()=>{});
+      jamShow('Joining','Loading your friend’s synth…',null,['Cancel',netEnd]);return;
+    }
+    if(peerId!==net.host)return;
+    if(d.t==='e')node.port.postMessage({type:'net',front:d.b,events:[{s:d.s,b:d.b,m:d.m}]});
+    else if(d.t==='h')node.port.postMessage({type:'net',front:d.b,events:[]});
+    else if(d.t==='x')check(d.b,d.h,'host');
+    else if(d.t==='bad')netFail('Your FM-1 Pocket and your friend’s are different versions. Reload both, then try again.');
+  };
+  net.snap.onMessage=async(data,{peerId,metadata})=>{
+    if(peerId!==net.host||net.role!=='guest')return;
+    const mem=await pack(data,false);
+    node.port.postMessage({type:'load',mem:mem.buffer,b:metadata.b,s:metadata.s},[mem.buffer]);
+    net.hashes.clear();
+    if(!net.live){net.live=true;net.volume=volume;setGain();clearTimeout(net.timer);
+      jamShow('Connected','You’re playing your friend’s FM-1. Your presses reach it after a short delay.',['OK',jamHide],['Leave',netEnd]);}
+  };
+  net.room.onPeerLeave=peer=>{if(peer===net.host)netEnd();};
+}
+function netFail(text){netEnd().then(()=>jamShow('Couldn’t join',text,['OK',jamHide]));}
+function resync(){const t=performance.now();if(net.host&&t-net.resyncAt>5000){net.resyncAt=t;net.act.send({t:'re'},{target:net.host}).catch(()=>{});}}
+function check(b,h,from){
+  const seen=net.hashes.get(b);
+  if(!seen){net.hashes.set(b,{from,h});for(const k of net.hashes.keys())if(k<b-8192)net.hashes.delete(k);return;}
+  if(seen.from===from)return;
+  net.hashes.delete(b);if(seen.h!==h)resync();
+}
+function netInput(kind,index,value){
+  if(kind===3){setGain();return;} // each phone keeps its own volume
+  if(kind<2){const key=kind*32+index;value?net.mine.add(key):net.mine.delete(key);}
+  if(net.role==='host')apply('me',kind,index,value);
+  else net.act.send({t:'in',k:kind,i:index,v:value},{target:net.host}).catch(()=>{});
+}
+function netWorklet(m){
+  if(m.type==='ev'){const e=m.e;toPeers({t:'e',s:e.s,b:e.b,m:e.m});}
+  else if(m.type==='snap'&&net.peers.has(m.peer))
+    pack(m.mem,true).then(z=>net.snap.send(z,{target:m.peer,metadata:{b:m.b,s:m.s}})).catch(()=>{});
+  else if(m.type==='hash'){if(net.role==='host')toPeers({t:'x',b:m.b,h:m.h});else if(net.live)check(m.b,m.h,'me');}
+  else if(m.type==='behind')resync();
+}
+$('t-jam').addEventListener('click',()=>{
+  if(net.role==='host'){jam.hidden?(jam.hidden=false,jamStatus()):jamHide();return;}
+  if(net.role==='guest'){jam.hidden?jamShow('Connected','You’re playing your friend’s FM-1.',['OK',jamHide],['Leave',netEnd]):jamHide();return;}
+  if(!jam.hidden){jamHide();return;}
+  jamShow('Play together','Start a session and send the link to a friend. You’ll share this FM-1: the song, the screen and every control.',
+    ['Start',netHost],['Close',jamHide]);
+});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ctx&&audioOn&&ctx.state!=='running')ctx.resume();});
-addEventListener('blur',()=>{send({type:'release'});for(const el of stage.querySelectorAll('.down'))el.classList.remove('down');});
+addEventListener('blur',()=>{if(net.live)for(const key of [...net.mine])netInput(key>>5,key&31,0);else send({type:'release'});for(const el of stage.querySelectorAll('.down'))el.classList.remove('down');});
 
 /* ---- boot the firmware on the page; it ticks here until sound starts ---- */
 try{
   const bin=atob(FM1_WASM_B64);wasm=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)wasm[i]=bin.charCodeAt(i);
+  {let h=2166136261;for(let i=0;i<wasm.length;i++)h=Math.imul(h^wasm[i],16777619)>>>0;net.tag=h.toString(36);}
   const Core=coreRuntime();core=new Core(wasm,loadFlash());
   control(3,0,Math.round(volume*1023/100));
   receive(core.frame(true));
@@ -342,6 +557,9 @@ try{
     const blocks=Math.floor(frames/bf);frames%=bf;
     if(core&&!starting){core.command({type:'tick',blocks});receive(core.frame());}
   },20);
+  const invite=/[#&]jam=([a-z0-9]{4,32})/.exec(location.hash);
+  if(invite)jamShow('Play together','A friend invited you to play their FM-1 with them. Your own songs stay safe on this phone.',
+    ['Join',()=>netJoin(invite[1])],['Not now',()=>{history.replaceState(null,'',location.pathname+location.search);jamHide();}]);
 }catch(err){
   const f=document.createElement('div');f.id='fail';f.textContent='The FM-1 engine could not start here: '+err.message;stage.append(f);
 }

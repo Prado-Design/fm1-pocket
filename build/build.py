@@ -55,10 +55,14 @@ for size in (180, 192, 512):
 }
 ''')
 
+# Play together: the peer-to-peer library is loaded only when a session starts.
+trystero = (here / 'trystero.js').read_bytes()
+(root / 'trystero.js').write_bytes(trystero)
+
 # The cache name changes whenever the page changes, so installed copies pick up new builds.
-version = hashlib.sha256(page.encode()).hexdigest()[:12]
+version = hashlib.sha256(page.encode() + trystero).hexdigest()[:12]
 (root / 'sw.js').write_text(f'''const CACHE = 'fm1-pocket-{version}';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
+const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './trystero.js'];
 self.addEventListener('install', e => {{
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
 }});
