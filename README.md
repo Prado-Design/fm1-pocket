@@ -8,12 +8,4 @@ A playable M-VAVE FM-1 for the phone. It runs the official **FM1 Open V14** firm
 - The engine runtime in the page is adapted from that repo's `sdk/Simulator.js`.
 - License: GPL-3.0-only with the FM1 SDK linking exception, as in the FM1 Open repository. See its `LICENSE.md` and `THIRD_PARTY.md`.
 
-## Rebuild
-
-```
-python3 build/build.py
-```
-
-Edit `build/template.html` (page and controls) or `build/faceplate.svg` (artwork), then rebuild. Every build changes the offline cache name, so installed copies update the next time they open online.
-
 Have Fun :)
